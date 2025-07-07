@@ -1,62 +1,63 @@
-name: Flutter CI/CD Pipeline
+name: Flutter CI
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
-    branches: [ main ]
-
-env:
-  FLUTTER_VERSION: '3.22.0'
+    branches: [main]
+  push:
+    branches: [main]
 
 jobs:
-  build-and-test:
+  build:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        channel: [stable, beta]
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
 
-      - name: Setup Flutter
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: ${{ matrix.channel }}
-
-      - name: Restore Flutter Pub Cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-          key: ${{ runner.os }}-flutter-${{ hashFiles('**/pubspec.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-flutter-
+          flutter-version: '3.29.2'
 
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Analyze code
+      - name: Run tests with coverage
+        run: flutter test --coverage
+
+      - name: Convert lcov to coverage summary
+        run: |
+          sudo apt-get update && sudo apt-get install -y lcov
+          genhtml coverage/lcov.info --output-directory coverage/html
+          lcov --summary coverage/lcov.info
+
+      - name: Check coverage percentage
+        id: coverage
+        run: |
+          COVERAGE=$(lcov --summary coverage/lcov.info | grep -Po 'lines\.+: \K[0-9]+(?=\.\d+%\s+\()')
+          echo "Coverage: $COVERAGE%"
+          if [ "$COVERAGE" -lt 80 ]; then
+            echo "Test coverage ($COVERAGE%) is below 80%. PR cannot be merged."
+            exit 1
+          fi
+          echo "Test coverage is $COVERAGE% (>= 80%)"
+
+      - name: Upload coverage report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/html
+
+      - name: Analyze
         run: flutter analyze
 
       - name: Run tests
-        run: flutter test --coverage
+        run: flutter test
 
-      - name: Upload coverage report
-        uses: actions/upload-artifact@v3
-        with:
-          name: coverage-report
-          path: coverage/
-
-      - name: Build APK (debug)
-        if: github.ref == 'refs/heads/main' && matrix.channel == 'stable'
+      - name: Build APK
         run: flutter build apk --debug
 
-      - name: Upload APK
-        if: github.ref == 'refs/heads/main' && matrix.channel == 'stable'
-        uses: actions/upload-artifact@v3
+      - name: Upload APK to Github release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
         with:
-          name: app-debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          files: build/app/outputs/flutter-apk/app-debug.apk
